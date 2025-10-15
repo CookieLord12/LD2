@@ -1,183 +1,103 @@
 # ===============================================
-# LD2: Knygų rekomendacijų sistema
-# Metodai: TF–IDF + kosinis panašumas (NearestNeighbors)
-# Rezultatų pateikimas: lentelė terminale (pandas)
-# Vizualizacija: 2D projekcija (PCA/TruncatedSVD) su pažymėtomis panašiomis knygomis
-# Papildomai: vartotojo įvestis terminale
+# LD2: Knygų rekomendacijų sistema su filtravimu ir web sąsaja (Streamlit)
 # ===============================================
 
 import pandas as pd
 import numpy as np
 import string
-import warnings
-warnings.filterwarnings("ignore")
-
+import streamlit as st
+import matplotlib.pyplot as plt
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import TruncatedSVD
-# t-SNE (pasirenkama; išjunk jei neturi paketo ar lėta)
-try:
-    from sklearn.manifold import TSNE
-    HAS_TSNE = True
-except Exception:
-    HAS_TSNE = False
 
-import matplotlib.pyplot as plt
-
-
-# 1) Duomenų įkėlimas ir paruošimas
-print("📚 Įkeliami duomenys...")
-books = pd.read_csv("BooksDatasetClean.csv")
-
-print("🧹 Valomi ir apjungiami tekstai...")
-for col in ['Title', 'Authors', 'Description', 'Category', 'Publisher']:
-    if col not in books.columns:
-        books[col] = ''
-    books[col] = books[col].fillna('')
-
-books['text'] = (
-    books['Title'] + ' ' +
-    books['Authors'] + ' ' +
-    books['Description'] + ' ' +
-    books['Category'] + ' ' +
-    books['Publisher']
-)
-
-def clean_text(text: str) -> str:
-    text = text.lower()
-    text = ''.join(ch for ch in text if ch not in string.punctuation)
-    return text
-
-books['clean_text'] = books['text'].apply(clean_text)
-
-
-# 2) TF–IDF
-print("🧠 Vektorizuojama (TF–IDF)...")
-tfidf = TfidfVectorizer(stop_words='english', max_features=40000)
-tfidf_matrix = tfidf.fit_transform(books['clean_text'])
-print(f"✅ TF–IDF matricos forma: {tfidf_matrix.shape}")
-
-
-# 3) Nearest Neighbors pagal kosinį atstumą
-print("🔍 Kuriamas panašumo modelis...")
-nn = NearestNeighbors(metric='cosine', algorithm='brute')
-nn.fit(tfidf_matrix)
-
-# Pagalbinė: grąžinti rekomendacijų DataFrame
-def recommend_df(book_title: str, n: int = 5) -> pd.DataFrame:
-    idx = books[books['Title'].str.lower() == book_title.lower()].index
-    if len(idx) == 0:
-        raise ValueError("⚠️ Knyga nerasta duomenų rinkinyje.")
-    idx = idx[0]
-
-    distances, indices = nn.kneighbors(tfidf_matrix[idx], n_neighbors=n+1)
-    # Pirmas elementas – pati knyga, praleidžiam
-    rec_idx = indices[0][1:]
-    rec_dist = distances[0][1:]
-    sim = 1.0 - rec_dist  # kosinio panašumo balas
-
-    df = pd.DataFrame({
-        "Title": books.iloc[rec_idx]['Title'].values,
-        "Authors": books.iloc[rec_idx]['Authors'].values,
-        "Category": books.iloc[rec_idx]['Category'].values,
-        "Publisher": books.iloc[rec_idx]['Publisher'].values,
-        "Similarity": np.round(sim, 3)
-    })
+# 1️⃣ Duomenų įkėlimas
+@st.cache_data
+def load_data():
+    df = pd.read_csv("BooksDatasetClean.csv")
+    for col in ['Title', 'Authors', 'Description', 'Category', 'Publisher', 'Price Starting With ($)']:
+        df[col] = df[col].fillna('')
+    df['Price Starting With ($)'] = pd.to_numeric(df['Price Starting With ($)'], errors='coerce').fillna(0)
+    df['text'] = (
+        df['Title'] + ' ' + df['Authors'] + ' ' + df['Description'] +
+        ' ' + df['Category'] + ' ' + df['Publisher']
+    )
+    def clean_text(t):
+        t = t.lower()
+        return ''.join(ch for ch in t if ch not in string.punctuation)
+    df['clean_text'] = df['text'].apply(clean_text)
     return df
 
-# 4) Konsolinė recommend() funkcija (spausdina lentelę)
-def recommend(book_title: str, n: int = 5):
-    try:
-        df = recommend_df(book_title, n=n)
-    except ValueError as e:
-        print(str(e))
-        return
+books = load_data()
 
-    print(f"\n📖 Panašios knygos į: '{book_title}'\n")
-    # Gražiai atspausdinti lentelę terminale
-    with pd.option_context('display.max_colwidth', 80, 'display.width', 140):
-        print(df.to_string(index=False))
+# 2️⃣ TF–IDF + Nearest Neighbors
+@st.cache_resource
+def build_model(df):
+    tfidf = TfidfVectorizer(stop_words='english', max_features=40000)
+    tfidf_matrix = tfidf.fit_transform(df['clean_text'])
+    nn = NearestNeighbors(metric='cosine', algorithm='brute')
+    nn.fit(tfidf_matrix)
+    return tfidf, tfidf_matrix, nn
 
+tfidf, tfidf_matrix, nn = build_model(books)
 
-# 5) 2D projekcija (PCA/TruncatedSVD) su pažymėtais rekomenduotais kaimynais
-def visualize_neighbors(book_title: str, n: int = 5, use_tsne: bool = False, random_state: int = 42):
-    """
-    Pavaizduoja 2D projekciją (numatytai: TruncatedSVD=PCA analogas) tik
-    QUERY + REKOMENDACIJOS (kad būtų greita net su 100k įrašų).
-    """
+# 3️⃣ Rekomendacijų funkcija su filtrais
+def recommend_df(book_title, n=5, genre=None, price_min=None, price_max=None):
     idx = books[books['Title'].str.lower() == book_title.lower()].index
     if len(idx) == 0:
-        print("⚠️ Knyga nerasta duomenų rinkinyje.")
-        return
+        st.warning("Knyga nerasta duomenų rinkinyje.")
+        return pd.DataFrame()
     idx = idx[0]
+    distances, indices = nn.kneighbors(tfidf_matrix[idx], n_neighbors=n+50)  # daugiau, kad būtų ką filtruoti
+    rec_idx = indices[0][1:]
+    rec_dist = distances[0][1:]
+    sim = 1.0 - rec_dist
+    df = books.iloc[rec_idx].copy()
+    df['Similarity'] = np.round(sim, 3)
 
-    # Rekomenduoti ir gauti indeksus
-    distances, indices = nn.kneighbors(tfidf_matrix[idx], n_neighbors=n+1)
-    rec_idx = indices[0]        # įskaitant pačią knygą
-    labels = ["Query"] + [f"Rec{i}" for i in range(1, len(rec_idx))]
+    # Filtrai
+    if genre:
+        df = df[df['Category'].str.contains(genre, case=False, na=False)]
+    if price_min is not None and price_max is not None:
+        df = df[(df['Price Starting With ($)'] >= price_min) & (df['Price Starting With ($)'] <= price_max)]
 
-    # Ištraukiam tik šių eilučių TF–IDF
-    subX = tfidf_matrix[rec_idx, :]
+    return df.head(n)
 
-    # Projekcija į 2D:
-    if use_tsne and HAS_TSNE:
-        # t-SNE ant keliolikos vektorių bus greitas; perpaversime į tankų formatą
-        X_dense = subX.toarray()
-        reducer = TSNE(n_components=2, init='pca', learning_rate='auto', random_state=random_state, perplexity=min(5, len(rec_idx) - 1))
-        X2 = reducer.fit_transform(X_dense)
-        method_name = "t-SNE"
+# 4️⃣ 2D vizualizacija (PCA)
+def plot_projection(title, df):
+    idx = books[books['Title'].str.lower() == title.lower()].index
+    if len(idx) == 0 or df.empty:
+        return None
+    idx = idx[0]
+    indices = list(df.index[:5]) + [idx]
+    subX = tfidf_matrix[indices, :]
+    reducer = TruncatedSVD(n_components=2, random_state=42)
+    X2 = reducer.fit_transform(subX)
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(X2[:-1, 0], X2[:-1, 1], c='blue', label='Rekomendacijos')
+    ax.scatter(X2[-1, 0], X2[-1, 1], c='red', marker='*', s=200, label='Užklausa')
+    for i, t in enumerate(list(df['Title'][:5]) + [books.iloc[idx]['Title']]):
+        ax.text(X2[i, 0]+0.02, X2[i, 1], t[:30], fontsize=8)
+    ax.legend()
+    ax.set_title(f"2D PCA projekcija – '{books.iloc[idx]['Title']}'")
+    st.pyplot(fig)
+
+# 5️⃣ Web sąsaja
+st.title("📚 Knygų rekomendacijų sistema (TF–IDF + Cosine Similarity)")
+st.write("Rekomendacijos pagal panašumą tarp knygų aprašymų ir papildomus filtrus.")
+
+user_title = st.text_input("Įveskite knygos pavadinimą:")
+genres = sorted(list(set([g.strip() for g in books['Category'].dropna().unique() if isinstance(g, str)])))
+genre_filter = st.selectbox("Pasirinkite žanrą (nebūtina):", ["Visi"] + genres)
+price_min, price_max = st.slider("Kainos intervalas ($):", 0.0, float(books['Price Starting With ($)'].max()), (0.0, 50.0))
+
+if user_title:
+    genre_val = None if genre_filter == "Visi" else genre_filter
+    recs = recommend_df(user_title, n=5, genre=genre_val, price_min=price_min, price_max=price_max)
+
+    if not recs.empty:
+        st.success(f"📖 Panašios knygos į: *{user_title}*")
+        st.dataframe(recs[['Title', 'Authors', 'Category', 'Publisher', 'Price Starting With ($)', 'Similarity']])
+        plot_projection(user_title, recs)
     else:
-        # TruncatedSVD veikia tiesiogiai su sparse (PCA analogas)
-        reducer = TruncatedSVD(n_components=2, random_state=random_state)
-        X2 = reducer.fit_transform(subX)
-        method_name = "PCA (TruncatedSVD)"
-
-    # Braižymas
-    plt.figure(figsize=(8, 6))
-    # Query – didesnis ženkliukas
-    plt.scatter(X2[0, 0], X2[0, 1], s=160, marker='*', label='Query', zorder=5)
-    # Rekomendacijos
-    if X2.shape[0] > 1:
-        plt.scatter(X2[1:, 0], X2[1:, 1], s=60, marker='o', label='Recommendations', alpha=0.85)
-
-    # Pridėti etiketes (pavadinimus), bet neperkraunant
-    for i, idx_i in enumerate(rec_idx):
-        title = books.iloc[idx_i]['Title']
-        # Truputį patraukti tekstą nuo taško
-        dx, dy = (0.01, 0.01) if i == 0 else (0.008, -0.008)
-        plt.text(X2[i, 0] + dx, X2[i, 1] + dy,
-                 (title[:40] + "…") if len(title) > 40 else title,
-                 fontsize=8)
-
-    plt.title(f"2D projekcija ({method_name}) – '{books.iloc[idx]['Title']}' ir {len(rec_idx)-1} rekomendacijų")
-    plt.xlabel("Component 1")
-    plt.ylabel("Component 2")
-    plt.legend(loc='best')
-    plt.tight_layout()
-    plt.show()
-
-
-# 6) Paleidimas iš terminalo
-if __name__ == "__main__":
-    print("\n✅ Duomenys įkelti. Gali naudoti recommend('______')")
-    print("💡 Įvesk knygos pavadinimą (arba palik tuščią, kad išeitum).")
-
-    while True:
-        try:
-            user_title = input("\n🔎 Knygos pavadinimas: ").strip()
-        except EOFError:
-            break
-
-        if user_title == "":
-            print("👋 Baigiame.")
-            break
-
-        # Lentelė su rezultatais
-        recommend(user_title, n=5)
-
-        # Vizualizacija (PCA/SVD pagal nutylėjimą; t-SNE gali būti lėtas)
-        try:
-            visualize_neighbors(user_title, n=5, use_tsne=False)
-        except Exception as e:
-            print(f"⚠️ Nepavyko nubraižyti: {e}")
+        st.warning("Nerasta rekomendacijų pagal pasirinktus filtrus.")
