@@ -11,7 +11,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import TruncatedSVD
 
-# 1️⃣ Duomenų įkėlimas
 @st.cache_data
 def load_data():
     df = pd.read_csv("BooksDatasetClean.csv")
@@ -30,7 +29,6 @@ def load_data():
 
 books = load_data()
 
-# 2️⃣ TF–IDF + Nearest Neighbors
 @st.cache_resource
 def build_model(df):
     tfidf = TfidfVectorizer(stop_words='english', max_features=40000)
@@ -41,21 +39,19 @@ def build_model(df):
 
 tfidf, tfidf_matrix, nn = build_model(books)
 
-# 3️⃣ Rekomendacijų funkcija su filtrais
 def recommend_df(book_title, n=5, genre=None, price_min=None, price_max=None):
     idx = books[books['Title'].str.lower() == book_title.lower()].index
     if len(idx) == 0:
         st.warning("Knyga nerasta duomenų rinkinyje.")
         return pd.DataFrame()
     idx = idx[0]
-    distances, indices = nn.kneighbors(tfidf_matrix[idx], n_neighbors=n+50)  # daugiau, kad būtų ką filtruoti
+    distances, indices = nn.kneighbors(tfidf_matrix[idx], n_neighbors=n+50)
     rec_idx = indices[0][1:]
     rec_dist = distances[0][1:]
     sim = 1.0 - rec_dist
     df = books.iloc[rec_idx].copy()
     df['Similarity'] = np.round(sim, 3)
 
-    # Filtrai
     if genre:
         df = df[df['Category'].apply(lambda x: genre.lower() in [g.strip().lower() for g in x.split(',')])]
 
@@ -64,7 +60,6 @@ def recommend_df(book_title, n=5, genre=None, price_min=None, price_max=None):
 
     return df.head(n)
 
-# 4️⃣ 2D vizualizacija (PCA)
 def plot_projection(title, df):
     idx = books[books['Title'].str.lower() == title.lower()].index
     if len(idx) == 0 or df.empty:
@@ -83,12 +78,11 @@ def plot_projection(title, df):
     ax.set_title(f"2D PCA projekcija – '{books.iloc[idx]['Title']}'")
     st.pyplot(fig)
 
-# 5️⃣ Web sąsaja
 st.title("📚 Knygų rekomendacijų sistema (TF–IDF + Cosine Similarity)")
 st.write("Rekomendacijos pagal panašumą tarp knygų aprašymų ir papildomus filtrus.")
 
 user_title = st.text_input("Įveskite knygos pavadinimą:")
-# --- Išskaidome žanrus iš "Category" stulpelio ---
+
 all_genres = []
 for val in books['Category'].dropna():
     parts = [p.strip() for p in val.split(',') if p.strip()]
