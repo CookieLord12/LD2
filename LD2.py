@@ -57,7 +57,8 @@ def recommend_df(book_title, n=5, genre=None, price_min=None, price_max=None):
 
     # Filtrai
     if genre:
-        df = df[df['Category'].str.contains(genre, case=False, na=False)]
+        df = df[df['Category'].apply(lambda x: genre.lower() in [g.strip().lower() for g in x.split(',')])]
+
     if price_min is not None and price_max is not None:
         df = df[(df['Price Starting With ($)'] >= price_min) & (df['Price Starting With ($)'] <= price_max)]
 
@@ -87,8 +88,15 @@ st.title("📚 Knygų rekomendacijų sistema (TF–IDF + Cosine Similarity)")
 st.write("Rekomendacijos pagal panašumą tarp knygų aprašymų ir papildomus filtrus.")
 
 user_title = st.text_input("Įveskite knygos pavadinimą:")
-genres = sorted(list(set([g.strip() for g in books['Category'].dropna().unique() if isinstance(g, str)])))
-genre_filter = st.selectbox("Pasirinkite žanrą (nebūtina):", ["Visi"] + genres)
+# --- Išskaidome žanrus iš "Category" stulpelio ---
+all_genres = []
+for val in books['Category'].dropna():
+    parts = [p.strip() for p in val.split(',') if p.strip()]
+    all_genres.extend(parts)
+
+unique_genres = sorted(set(all_genres))
+genre_filter = st.selectbox("Pasirinkite žanrą (nebūtina):", ["Visi"] + unique_genres)
+
 price_min, price_max = st.slider("Kainos intervalas ($):", 0.0, float(books['Price Starting With ($)'].max()), (0.0, 50.0))
 
 if user_title:
