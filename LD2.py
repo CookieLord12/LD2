@@ -1,7 +1,3 @@
-# ===============================================
-# LD2: Knygų rekomendacijų sistema su filtravimu ir web sąsaja (Streamlit)
-# ===============================================
-
 import pandas as pd
 import numpy as np
 import string
@@ -39,25 +35,32 @@ def build_model(df):
 
 tfidf, tfidf_matrix, nn = build_model(books)
 
+def suggest_titles(prefix, limit=10):
+    prefix = prefix.lower().strip()
+    if not prefix:
+        return []
+    matches = books[books['Title'].str.lower().str.contains(prefix, na=False)]
+    return matches['Title'].head(limit).tolist()
+
 def recommend_df(book_title, n=5, genre=None, price_min=None, price_max=None):
     idx = books[books['Title'].str.lower() == book_title.lower()].index
     if len(idx) == 0:
         st.warning("Knyga nerasta duomenų rinkinyje.")
         return pd.DataFrame()
     idx = idx[0]
+
     distances, indices = nn.kneighbors(tfidf_matrix[idx], n_neighbors=n+50)
     rec_idx = indices[0][1:]
     rec_dist = distances[0][1:]
     sim = 1.0 - rec_dist
+
     df = books.iloc[rec_idx].copy()
     df['Similarity'] = np.round(sim, 3)
-
+    
     if genre:
         df = df[df['Category'].apply(lambda x: genre.lower() in [g.strip().lower() for g in x.split(',')])]
-
     if price_min is not None and price_max is not None:
         df = df[(df['Price Starting With ($)'] >= price_min) & (df['Price Starting With ($)'] <= price_max)]
-
     return df.head(n)
 
 def plot_projection(title, df):
@@ -81,8 +84,6 @@ def plot_projection(title, df):
 st.title("📚 Knygų rekomendacijų sistema (TF–IDF + Cosine Similarity)")
 st.write("Rekomendacijos pagal panašumą tarp knygų aprašymų ir papildomus filtrus.")
 
-user_title = st.text_input("Įveskite knygos pavadinimą:")
-
 all_genres = []
 for val in books['Category'].dropna():
     parts = [p.strip() for p in val.split(',') if p.strip()]
@@ -93,13 +94,20 @@ genre_filter = st.selectbox("Pasirinkite žanrą (nebūtina):", ["Visi"] + uniqu
 
 price_min, price_max = st.slider("Kainos intervalas ($):", 0.0, float(books['Price Starting With ($)'].max()), (0.0, 50.0))
 
-if user_title:
-    genre_val = None if genre_filter == "Visi" else genre_filter
-    recs = recommend_df(user_title, n=5, genre=genre_val, price_min=price_min, price_max=price_max)
+partial_input = st.text_input("Įveskite knygos pavadinimą (dalį pavadinimo):")
+suggested_titles = suggest_titles(partial_input)
 
+if suggested_titles:
+    selected_title = st.selectbox("Pasirinkite knygą iš pasiūlymų:", suggested_titles)
+else:
+    selected_title = None
+
+if selected_title:
+    genre_val = None if genre_filter == "Visi" else genre_filter
+    recs = recommend_df(selected_title, n=5, genre=genre_val, price_min=price_min, price_max=price_max)
     if not recs.empty:
-        st.success(f"📖 Panašios knygos į: *{user_title}*")
+        st.success(f"📖 Panašios knygos į: *{selected_title}*")
         st.dataframe(recs[['Title', 'Authors', 'Category', 'Publisher', 'Price Starting With ($)', 'Similarity']])
-        plot_projection(user_title, recs)
+        plot_projection(selected_title, recs)
     else:
         st.warning("Nerasta rekomendacijų pagal pasirinktus filtrus.")
