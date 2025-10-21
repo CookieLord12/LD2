@@ -48,15 +48,12 @@ def recommend_df(book_title, n=5, genre=None, price_min=None, price_max=None):
         st.warning("Knyga nerasta duomenų rinkinyje.")
         return pd.DataFrame()
     idx = idx[0]
-
     distances, indices = nn.kneighbors(tfidf_matrix[idx], n_neighbors=n+50)
     rec_idx = indices[0][1:]
     rec_dist = distances[0][1:]
     sim = 1.0 - rec_dist
-
     df = books.iloc[rec_idx].copy()
     df['Similarity'] = np.round(sim, 3)
-    
     if genre:
         df = df[df['Category'].apply(lambda x: genre.lower() in [g.strip().lower() for g in x.split(',')])]
     if price_min is not None and price_max is not None:
@@ -81,6 +78,37 @@ def plot_projection(title, df):
     ax.set_title(f"2D PCA projekcija – '{books.iloc[idx]['Title']}'")
     st.pyplot(fig)
 
+def plot_full_dataset(sample_size=3000):
+    if len(books) > sample_size:
+        sample = books.sample(sample_size, random_state=42)
+        X_sample = tfidf.transform(sample['clean_text'])
+    else:
+        sample = books
+        X_sample = tfidf_matrix
+
+    reducer = TruncatedSVD(n_components=2, random_state=42)
+    X2 = reducer.fit_transform(X_sample)
+
+    categories = sample['Category'].apply(
+        lambda x: x.split(',')[0].strip() if isinstance(x, str) and ',' in x else (x.strip() if isinstance(x, str) else 'Unknown')
+    )
+
+    cat_codes, cat_labels = pd.factorize(categories)
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    scatter = ax.scatter(X2[:, 0], X2[:, 1], c=cat_codes, cmap='tab20', s=10, alpha=0.6)
+
+    unique_cats = pd.unique(categories)
+    colors = [plt.cm.tab20(i / max(1, len(unique_cats)-1)) for i in range(len(unique_cats))]
+    for cat, color in zip(unique_cats, colors):
+        ax.scatter([], [], c=[color], label=cat, s=30)
+    ax.legend(title="Žanrai", loc='upper right', fontsize=8)
+
+    ax.set_title(f"Visų knygų 2D PCA projekcija (pavyzdys: {sample_size} iš {len(books)})")
+    ax.set_xlabel("Component 1")
+    ax.set_ylabel("Component 2")
+    st.pyplot(fig)
+
 st.title("📚 Knygų rekomendacijų sistema (TF–IDF + Cosine Similarity)")
 st.write("Rekomendacijos pagal panašumą tarp knygų aprašymų ir papildomus filtrus.")
 
@@ -88,15 +116,12 @@ all_genres = []
 for val in books['Category'].dropna():
     parts = [p.strip() for p in val.split(',') if p.strip()]
     all_genres.extend(parts)
-
 unique_genres = sorted(set(all_genres))
 genre_filter = st.selectbox("Pasirinkite žanrą (nebūtina):", ["Visi"] + unique_genres)
-
 price_min, price_max = st.slider("Kainos intervalas ($):", 0.0, float(books['Price Starting With ($)'].max()), (0.0, 50.0))
 
 partial_input = st.text_input("Įveskite knygos pavadinimą (dalį pavadinimo):")
 suggested_titles = suggest_titles(partial_input)
-
 if suggested_titles:
     selected_title = st.selectbox("Pasirinkite knygą iš pasiūlymų:", suggested_titles)
 else:
@@ -111,3 +136,8 @@ if selected_title:
         plot_projection(selected_title, recs)
     else:
         st.warning("Nerasta rekomendacijų pagal pasirinktus filtrus.")
+
+st.divider()
+st.header("🌍 Visų knygų vizualizacija")
+sample_size = st.slider("Pasirinkite kiek knygų parodyti:", 1000, 8000, 3000, step=500)
+plot_full_dataset(sample_size)
